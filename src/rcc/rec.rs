@@ -73,6 +73,26 @@ pub trait ResetEnable {
     fn reset(self) -> Self;
 }
 
+/// The clock gating state of a peripheral in low-power mode
+///
+/// See RM0433 rev 7. Section 8.5.11
+#[derive(Copy, Clone, PartialEq)]
+pub enum LowPowerMode {
+    /// Kernel and bus interface clocks are not provided in low-power modes.
+    Off,
+    /// Kernel and bus interface clocks are provided in CSleep mode.
+    Enabled,
+    /// Kernel and bus interface clocks are provided in both CSleep and CStop
+    /// modes. Only applies to peripherals in the D3 / SRD. If the peripheral is
+    /// not in the D3 / SRD then this has the same effect as `Enabled`.
+    Autonomous,
+}
+impl Default for LowPowerMode {
+    fn default() -> Self {
+        LowPowerMode::Enabled
+    }
+}
+
 impl Rcc {
     /// Returns all the peripherals resets / enables / kernel clocks.
     ///
@@ -101,7 +121,7 @@ macro_rules! peripheral_reset_and_enable_control {
     ($($AXBn:ident, $axb_doc:expr => [
         $(
             $( #[ $pmeta:meta ] )*
-                $p:ident
+                $(($Auto:ident))* $p:ident
                 $([ kernel $clk:ident: $pk:ident $(($Variant:ident))* $ccip:ident $clk_doc:expr ])*
                 $([ group clk: $pk_g:ident $( $(($Variant_g:ident))* $ccip_g:ident $clk_doc_g:expr )* ])*
         ),*
@@ -146,6 +166,28 @@ macro_rules! peripheral_reset_and_enable_control {
                     $( #[ $pmeta ] )*
                     pub struct $p {
                         pub(crate) _marker: PhantomData<*const ()>,
+                    }
+                    $( #[ $pmeta ] )*
+                    impl $p {
+                        /// Set Low Power Mode for peripheral
+                        pub fn low_power(self, lpm: LowPowerMode) -> Self {
+                            // unsafe: Owned exclusive access to this bitfield
+                            interrupt::free(|_| {
+                                // LPEN
+                                let lpenr = unsafe {
+                                    &(*RCC::ptr()).[< $AXBn:lower lpenr >]
+                                };
+                                lpenr.modify(|_, w| w.[< $p:lower lpen >]()
+                                             .bit(lpm != LowPowerMode::Off));
+                                // AMEN
+                                $(
+                                    let amr = unsafe { autonomous!($Auto) };
+                                    amr.modify(|_, w| w.[< $p:lower amen >]()
+                                               .bit(lpm == LowPowerMode::Autonomous));
+                                )*
+                            });
+                            self
+                        }
                     }
                     $( #[ $pmeta ] )*
                     unsafe impl Send for $p {}
@@ -306,6 +348,13 @@ macro_rules! variant_return_type {
     };
 }
 
+// Register for autonomous mode enable bits
+macro_rules! autonomous {
+    ($Auto:ident) => {
+        &(*RCC::ptr()).d3amr
+    };
+}
+
 // Enumerate all peripherals and optional clock multiplexers
 //
 // If a kernel clock multiplexer is shared between multiple peripherals, all
@@ -331,8 +380,10 @@ peripheral_reset_and_enable_control! {
     ];
 
     AHB4, "AMBA High-performance Bus (AHB4) peripherals" => [
-        Hsem, Bdma, Crc,
-        Adc3 [group clk: Adc],
+        (Auto) Bdma,
+        (Auto) Crc,
+        (Auto) Adc3 [group clk: Adc],
+
         Gpioa, Gpiob, Gpioc, Gpiod, Gpioe, Gpiof, Gpiog, Gpioh, Gpioi, Gpioj, Gpiok
     ];
 
@@ -388,15 +439,16 @@ peripheral_reset_and_enable_control! {
     ];
 
     APB4, "Advanced Peripheral Bus 4 (APB4) peripherals" => [
-        Vref, Comp12,
+        (Auto) Vref,
+        (Auto) Comp12,
 
-        Lptim2 [kernel clk: Lptim2(Variant) d3ccip "LPTIM2"],
-        Lptim3 [group clk: Lptim345(Variant) d3ccip "LPTIM3/4/5"],
-        Lptim4 [group clk: Lptim345],
-        Lptim5 [group clk: Lptim345],
-        I2c4 [kernel clk: I2c4 d3ccip "I2C4"],
-        Spi6 [kernel clk: Spi6(Variant) d3ccip "SPI6"],
-        Sai4 [kernel clk_a: Sai4A(Variant) d3ccip
+        (Auto) Lptim2 [kernel clk: Lptim2(Variant) d3ccip "LPTIM2"],
+        (Auto) Lptim3 [group clk: Lptim345(Variant) d3ccip "LPTIM3/4/5"],
+        (Auto) Lptim4 [group clk: Lptim345],
+        (Auto) Lptim5 [group clk: Lptim345],
+        (Auto) I2c4 [kernel clk: I2c4 d3ccip "I2C4"],
+        (Auto) Spi6 [kernel clk: Spi6(Variant) d3ccip "SPI6"],
+        (Auto) Sai4 [kernel clk_a: Sai4A(Variant) d3ccip
             "Sub-Block A of SAI4"]
             [kernel clk_b: Sai4B(Variant) d3ccip
             "Sub-Block B of SAI4"]
