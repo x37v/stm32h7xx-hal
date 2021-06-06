@@ -15,7 +15,9 @@ use stm32h7::Variant::Val;
 
 #[cfg(feature = "rm0455")]
 use crate::stm32::rcc::cdccip2r::{USART16910SEL_A, USART234578SEL_A};
-#[cfg(not(feature = "rm0455"))]
+#[cfg(feature = "rm0468")]
+use crate::stm32::rcc::d2ccip2r::{USART16910SEL_A, USART234578SEL_A};
+#[cfg(any(feature = "rm0433", feature = "rm0399"))]
 use crate::stm32::rcc::d2ccip2r::{USART16SEL_A, USART234578SEL_A};
 
 use crate::stm32::{UART4, UART5, UART7, UART8};
@@ -33,6 +35,7 @@ use crate::gpio::gpioe::{PE0, PE1, PE7, PE8};
 use crate::gpio::gpiof::{PF6, PF7};
 use crate::gpio::gpiog::{PG14, PG7, PG9};
 use crate::gpio::gpioh::{PH13, PH14};
+#[cfg(not(feature = "rm0468"))]
 use crate::gpio::gpioi::PI9;
 #[cfg(not(feature = "stm32h7b0"))]
 use crate::gpio::gpioj::{PJ8, PJ9};
@@ -305,6 +308,7 @@ uart_pins! {
             PC11<Alternate<AF8>>,
             PD0<Alternate<AF8>>,
             PH14<Alternate<AF8>>,
+            #[cfg(not(feature = "rm0468"))]
             PI9<Alternate<AF8>>
         ]
     UART5:
@@ -862,7 +866,7 @@ usart! {
     UART8: (uart8, Uart8, pclk1),
 }
 
-#[cfg(not(feature = "rm0455"))]
+#[cfg(any(feature = "rm0433", feature = "rm0399"))]
 usart_sel! {
     d2ccip2r, USART16SEL_A, usart16sel, RCC_PCLK2, pclk2;
 
@@ -872,6 +876,13 @@ usart_sel! {
 #[cfg(feature = "rm0455")]
 usart_sel! {
     cdccip2r, USART16910SEL_A, usart16910sel, RCC_PCLK2, pclk2;
+
+    USART1: "USART1",
+    USART6: "USART6",
+}
+#[cfg(feature = "rm0468")]
+usart_sel! {
+    d2ccip2r, USART16910SEL_A, usart16910sel, RCC_PCLK2, pclk2;
 
     USART1: "USART1",
     USART6: "USART6",
