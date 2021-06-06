@@ -51,7 +51,10 @@
 
 use crate::rcc::backup::BackupREC;
 use crate::stm32::PWR;
-#[cfg(all(feature = "revision_v", not(feature = "rm0455")))]
+#[cfg(all(
+    feature = "revision_v",
+    any(feature = "rm0433", feature = "rm0399")
+))]
 use crate::stm32::{RCC, SYSCFG};
 
 #[cfg(all(feature = "rm0433", feature = "smps"))]
@@ -68,7 +71,10 @@ impl PwrExt for PWR {
             rb: self,
             #[cfg(any(feature = "smps"))]
             supply_configuration: SupplyConfiguration::Default,
-            #[cfg(all(feature = "revision_v", not(feature = "rm0455")))]
+            #[cfg(all(
+                feature = "revision_v",
+                any(feature = "rm0433", feature = "rm0399")
+            ))]
             enable_vos0: false,
         }
     }
@@ -81,7 +87,10 @@ pub struct Pwr {
     pub(crate) rb: PWR,
     #[cfg(any(feature = "smps"))]
     supply_configuration: SupplyConfiguration,
-    #[cfg(all(feature = "revision_v", not(feature = "rm0455")))]
+    #[cfg(all(
+        feature = "revision_v",
+        any(feature = "rm0433", feature = "rm0399")
+    ))]
     enable_vos0: bool,
 }
 
@@ -285,7 +294,10 @@ impl Pwr {
                          the system low-power mode",
     }
 
-    #[cfg(all(feature = "revision_v", not(feature = "rm0455")))]
+    #[cfg(all(
+        feature = "revision_v",
+        any(feature = "rm0433", feature = "rm0399")
+    ))]
     pub fn vos0(mut self, _: &SYSCFG) -> Self {
         self.enable_vos0 = true;
         self
@@ -355,7 +367,10 @@ impl Pwr {
 
         // Enable overdrive for maximum clock
         // Syscfgen required to set enable overdrive
-        #[cfg(all(feature = "revision_v", not(feature = "rm0455")))]
+        #[cfg(all(
+            feature = "revision_v",
+            any(feature = "rm0433", feature = "rm0399")
+        ))]
         if self.enable_vos0 {
             unsafe {
                 &(*RCC::ptr()).apb4enr.modify(|_, w| w.syscfgen().enabled())
