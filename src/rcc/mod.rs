@@ -935,7 +935,7 @@ impl Rcc {
         });
         #[cfg(feature = "rm0455")]
         rcc.srdcfgr.modify(|_, w| unsafe {
-            w.d3ppre() // D3 contains APB4
+            w.srdppre() // D3 contains APB4
                 .bits(ppre4_bits)
         });
 
