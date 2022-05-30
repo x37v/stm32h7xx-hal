@@ -1172,7 +1172,7 @@ macro_rules! sdmmc {
                     }
                 }
                 #[cfg(feature = "sdmmc-fatfs2")]
-                fn into_fatfs_cursor(self, partition_index: u8) -> FatFsCursor<Sdmmc<$SDMMCX, SdCard>> {
+                pub fn into_fatfs_cursor(self, partition_index: u8) -> FatFsCursor<Sdmmc<$SDMMCX, SdCard>> {
                     FatFsCursor::new(self, partition_index)
                 }
             }
