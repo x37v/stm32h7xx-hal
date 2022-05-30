@@ -251,6 +251,8 @@ pub enum Error {
     NoCard,
     BadClock,
     SignalingSwitchFailed,
+    /// Invalid input.
+    InvalidInput,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -1212,6 +1214,33 @@ macro_rules! sdmmc {
 
             }
 
+            #[cfg(feature = "sdmmc-fatfs2")]
+            impl SdmmcIo for Sdmmc<$SDMMCX, SdCard> {
+                fn read_block(
+                    &mut self,
+                    addr: u32,
+                    block: &mut DataBlock,
+                ) -> Result<(), Error> {
+                    Self::read_block(self, addr, &mut block.0)
+                }
+
+                fn write_block(
+                    &mut self,
+                    addr: u32,
+                    block: &DataBlock,
+                ) -> Result<(), Error> {
+                    Self::write_block(self, addr, &block.0)
+                }
+            }
+
+
+            #[cfg(feature = "sdmmc-fatfs2")]
+            impl<'sdmmc> ::fatfs::IntoStorage<FatFsCursor<&'sdmmc mut Sdmmc<$SDMMCX, SdCard>>> for &'sdmmc mut Sdmmc<$SDMMCX, SdCard> {
+                fn into_storage(self) -> FatFsCursor<&'sdmmc mut Sdmmc<$SDMMCX, SdCard>> {
+                    FatFsCursor::new(self)
+                }
+            }
+
             impl Sdmmc<$SDMMCX, Emmc> {
                 /// Initializes eMMC device (if present) and sets the bus at the specified frequency.
                 pub fn init(&mut self, freq: impl Into<Hertz>) -> Result<(), Error> {
@@ -1355,3 +1384,285 @@ impl<SDMMC> SdmmcBlockDevice<SDMMC> {
         self.sdmmc.into_inner()
     }
 }
+
+// Adapted from stm32l4xx-hal
+// https://github.com/reitermarkus/stm32l4xx-hal/tree/sdmmc
+
+#[cfg(feature = "sdmmc-fatfs2")]
+mod fatfs2 {
+    use super::*;
+    use core::slice;
+    use fatfs::{IoBase, IoError, Read, Seek, SeekFrom, Write};
+
+    #[derive(Debug)]
+    pub struct FatFsCursor<SDMMC> {
+        sdmmc: SDMMC,
+        pos: u64,
+        partition_info: Option<(u32, u32)>,
+        block: DataBlock,
+        current_block: Option<u32>,
+    }
+
+    impl<SDMMC> FatFsCursor<SDMMC> {
+        pub fn new(sdmmc: SDMMC) -> Self {
+            Self {
+                sdmmc,
+                pos: 0,
+                partition_info: None,
+                block: DataBlock([0; 512]),
+                current_block: None,
+            }
+        }
+    }
+
+    pub trait SdmmcIo {
+        fn read_block(
+            &mut self,
+            addr: u32,
+            block: &mut DataBlock,
+        ) -> Result<(), Error>;
+        fn write_block(
+            &mut self,
+            addr: u32,
+            block: &DataBlock,
+        ) -> Result<(), Error>;
+    }
+
+    impl<T> SdmmcIo for &mut T
+    where
+        T: SdmmcIo,
+    {
+        fn read_block(
+            &mut self,
+            addr: u32,
+            block: &mut DataBlock,
+        ) -> Result<(), Error> {
+            (*self).read_block(addr, block)
+        }
+
+        fn write_block(
+            &mut self,
+            addr: u32,
+            block: &DataBlock,
+        ) -> Result<(), Error> {
+            (*self).write_block(addr, block)
+        }
+    }
+
+    impl<SDMMC> FatFsCursor<SDMMC>
+    where
+        SDMMC: SdmmcIo,
+    {
+        pub fn partition_info(&mut self) -> Result<(u32, u32), Error> {
+            if let Some(partition_info) = self.partition_info {
+                return Ok(partition_info);
+            }
+
+            let mut block = DataBlock([0; 512]);
+            self.sdmmc.read_block(0, &mut block)?;
+
+            // TODO: Support other partitions.
+            let partition1_info = &block.0[446..][..16];
+            let lba_start = u32::from_le_bytes([
+                partition1_info[8],
+                partition1_info[9],
+                partition1_info[10],
+                partition1_info[11],
+            ]);
+
+            let num_blocks = u32::from_le_bytes([
+                partition1_info[12],
+                partition1_info[13],
+                partition1_info[14],
+                partition1_info[15],
+            ]);
+
+            Ok(*self.partition_info.get_or_insert((lba_start, num_blocks)))
+        }
+    }
+
+    impl<SDMMC> IoBase for FatFsCursor<SDMMC> {
+        type Error = Error;
+    }
+
+    impl<SDMMC> IoBase for &mut FatFsCursor<SDMMC> {
+        type Error = Error;
+    }
+
+    impl<SDMMC> Seek for FatFsCursor<SDMMC>
+    where
+        SDMMC: SdmmcIo,
+    {
+        fn seek(&mut self, pos: SeekFrom) -> Result<u64, Self::Error> {
+            // TODO: Use `checked_add_signed` when stable.
+            let new_pos = match pos {
+                SeekFrom::Start(offset) => offset as i128,
+                SeekFrom::End(offset) => {
+                    let end = self.partition_info()?.1 * 512;
+                    end as i128 + offset as i128
+                }
+                SeekFrom::Current(offset) => self.pos as i128 + offset as i128,
+            };
+
+            if new_pos < 0 || new_pos > u64::MAX as i128 {
+                // Seek to negative or overflowing position.
+                return Err(Self::Error::InvalidInput);
+            }
+            let new_pos = new_pos as u64;
+
+            self.pos = new_pos;
+            Ok(self.pos)
+        }
+    }
+
+    impl<SDMMC> Seek for &mut FatFsCursor<SDMMC>
+    where
+        SDMMC: SdmmcIo,
+    {
+        fn seek(&mut self, pos: SeekFrom) -> Result<u64, Self::Error> {
+            (*self).seek(pos)
+        }
+    }
+
+    impl<SDMMC> Read for FatFsCursor<SDMMC>
+    where
+        SDMMC: SdmmcIo,
+    {
+        fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+            let (start, end) = self.partition_info()?;
+
+            let end = end as u64 * 512;
+            let pos = self.pos;
+
+            if pos >= end {
+                return Ok(0);
+            }
+
+            let addr = start + (pos / 512) as u32;
+            let offset = (pos % 512) as usize;
+            let len = buf.len().min(512 - offset);
+
+            // Only read the block if we have not already read it.
+            if self.current_block != Some(addr) {
+                self.sdmmc.read_block(addr, &mut self.block)?;
+                self.current_block = Some(addr);
+            }
+
+            buf[0..len].copy_from_slice(&self.block.0[offset..(offset + len)]);
+
+            self.pos += len as u64;
+
+            Ok(len)
+        }
+
+        // TODO: Add `read_exact` implementation which supports reading multiple blocks.
+    }
+
+    impl<SDMMC> Read for &mut FatFsCursor<SDMMC>
+    where
+        SDMMC: SdmmcIo,
+    {
+        fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
+            (*self).read(buf)
+        }
+    }
+
+    impl<SDMMC> Write for FatFsCursor<SDMMC>
+    where
+        SDMMC: SdmmcIo,
+    {
+        fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+            let (start, end) = self.partition_info()?;
+
+            let end = end as u64 * 512;
+            let pos = self.pos;
+
+            if pos >= end {
+                return Ok(0);
+            }
+
+            let addr = start + (pos / 512) as u32;
+            let offset = (pos % 512) as usize;
+            let len = buf.len().min(512 - offset);
+
+            // Only read the block if we have not already read it.
+            if self.current_block != Some(addr) && len != 512 {
+                self.current_block = None;
+                self.sdmmc.read_block(addr, &mut self.block)?;
+            }
+
+            self.block.0[offset..(offset + len)].copy_from_slice(&buf[0..len]);
+            self.sdmmc.write_block(addr, &self.block)?;
+            self.current_block = Some(addr);
+
+            self.pos += len as u64;
+
+            Ok(len)
+        }
+
+        // TODO: Add `write_exact` implementation which supports writing multiple blocks.
+
+        fn flush(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    impl<SDMMC> Write for &mut FatFsCursor<SDMMC>
+    where
+        SDMMC: SdmmcIo,
+    {
+        fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
+            (*self).write(buf)
+        }
+
+        fn flush(&mut self) -> Result<(), Self::Error> {
+            (*self).flush()
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    #[repr(align(4))]
+    pub struct DataBlock(pub [u8; 512]);
+
+    impl DataBlock {
+        pub const fn new() -> Self {
+            Self([0; 512])
+        }
+
+        pub fn blocks_to_words(blocks: &[DataBlock]) -> &[u32] {
+            let word_count = blocks.len() * 128;
+            // SAFETY: `DataBlock` is 4-byte aligned.
+            unsafe {
+                slice::from_raw_parts(blocks.as_ptr() as *mut u32, word_count)
+            }
+        }
+
+        pub fn blocks_to_words_mut(blocks: &mut [DataBlock]) -> &mut [u32] {
+            let word_count = blocks.len() * 128;
+            // SAFETY: `DataBlock` is 4-byte aligned.
+            unsafe {
+                slice::from_raw_parts_mut(
+                    blocks.as_mut_ptr() as *mut u32,
+                    word_count,
+                )
+            }
+        }
+    }
+
+    impl IoError for Error {
+        fn is_interrupted(&self) -> bool {
+            false
+        }
+
+        fn new_unexpected_eof_error() -> Self {
+            unimplemented!()
+        }
+
+        fn new_write_zero_error() -> Self {
+            unimplemented!()
+        }
+    }
+}
+
+#[cfg(feature = "sdmmc-fatfs2")]
+pub use fatfs2::*;
