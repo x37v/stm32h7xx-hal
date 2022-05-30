@@ -1235,8 +1235,8 @@ macro_rules! sdmmc {
 
 
             #[cfg(feature = "sdmmc-fatfs2")]
-            impl<'sdmmc> ::fatfs::IntoStorage<FatFsCursor<&'sdmmc mut Sdmmc<$SDMMCX, SdCard>>> for &'sdmmc mut Sdmmc<$SDMMCX, SdCard> {
-                fn into_storage(self) -> FatFsCursor<&'sdmmc mut Sdmmc<$SDMMCX, SdCard>> {
+            impl ::fatfs::IntoStorage<FatFsCursor<Sdmmc<$SDMMCX, SdCard>>> for Sdmmc<$SDMMCX, SdCard> {
+                fn into_storage(self) -> FatFsCursor<Sdmmc<$SDMMCX, SdCard>> {
                     FatFsCursor::new(self)
                 }
             }
