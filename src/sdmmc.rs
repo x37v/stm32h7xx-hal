@@ -1394,13 +1394,36 @@ mod fatfs2 {
     use core::slice;
     use fatfs::{IoBase, IoError, Read, Seek, SeekFrom, Write};
 
+    #[derive(Debug, Clone, Copy)]
+    pub struct PartitionInfo {
+        start: u32,
+        len_bytes: u64,
+    }
+
     #[derive(Debug)]
     pub struct FatFsCursor<SDMMC> {
         sdmmc: SDMMC,
         pos: u64,
-        partition_info: Option<(u32, u32)>,
+        partition_info: Option<PartitionInfo>,
         block: DataBlock,
         current_block: Option<u32>,
+    }
+
+    impl PartitionInfo {
+        pub fn new(lba_start: u32, num_blocks: u32) -> Self {
+            Self {
+                start: lba_start,
+                len_bytes: num_blocks as u64 * 512,
+            }
+        }
+
+        pub fn start(&self) -> u32 {
+            self.start
+        }
+
+        pub fn len_bytes(&self) -> u64 {
+            self.len_bytes
+        }
     }
 
     impl<SDMMC> FatFsCursor<SDMMC> {
@@ -1453,7 +1476,7 @@ mod fatfs2 {
     where
         SDMMC: SdmmcIo,
     {
-        pub fn partition_info(&mut self) -> Result<(u32, u32), Error> {
+        pub fn partition_info(&mut self) -> Result<PartitionInfo, Error> {
             if let Some(partition_info) = self.partition_info {
                 return Ok(partition_info);
             }
@@ -1477,7 +1500,9 @@ mod fatfs2 {
                 partition1_info[15],
             ]);
 
-            Ok(*self.partition_info.get_or_insert((lba_start, num_blocks)))
+            Ok(*self
+                .partition_info
+                .get_or_insert(PartitionInfo::new(lba_start, num_blocks)))
         }
     }
 
@@ -1507,7 +1532,7 @@ mod fatfs2 {
             let new_pos = match pos {
                 SeekFrom::Start(offset) => Ok(offset),
                 SeekFrom::End(offset) => {
-                    let end = self.partition_info()?.1 * 512;
+                    let end = self.partition_info()?.len_bytes();
                     checked_add_signed(end as u64, offset)
                 }
                 SeekFrom::Current(offset) => {
@@ -1536,12 +1561,10 @@ mod fatfs2 {
         SDMMC: SdmmcIo,
     {
         fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
-            let (start, end) = self.partition_info()?;
+            let PartitionInfo { start, len_bytes } = self.partition_info()?;
 
-            let end = end as u64 * 512;
             let pos = self.pos;
-
-            if pos >= end {
+            if pos >= len_bytes {
                 return Ok(0);
             }
 
@@ -1579,12 +1602,11 @@ mod fatfs2 {
         SDMMC: SdmmcIo,
     {
         fn write(&mut self, buf: &[u8]) -> Result<usize, Self::Error> {
-            let (start, end) = self.partition_info()?;
+            let PartitionInfo { start, len_bytes } = self.partition_info()?;
 
-            let end = end as u64 * 512;
             let pos = self.pos;
 
-            if pos >= end {
+            if pos >= len_bytes {
                 return Ok(0);
             }
 
