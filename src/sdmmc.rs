@@ -1171,6 +1171,10 @@ macro_rules! sdmmc {
                         sdmmc: core::cell::RefCell::new(self)
                     }
                 }
+                #[cfg(feature = "sdmmc-fatfs2")]
+                fn into_fatfs_cursor(self, partition_index: u8) -> FatFsCursor<Sdmmc<$SDMMCX, SdCard>> {
+                    FatFsCursor::new(self, partition_index)
+                }
             }
 
             #[cfg(feature = "sdmmc-fatfs")]
@@ -1233,11 +1237,10 @@ macro_rules! sdmmc {
                 }
             }
 
-
             #[cfg(feature = "sdmmc-fatfs2")]
             impl ::fatfs::IntoStorage<FatFsCursor<Sdmmc<$SDMMCX, SdCard>>> for Sdmmc<$SDMMCX, SdCard> {
                 fn into_storage(self) -> FatFsCursor<Sdmmc<$SDMMCX, SdCard>> {
-                    FatFsCursor::new(self)
+                    self.into_fatfs_cursor(0)
                 }
             }
 
@@ -1404,6 +1407,7 @@ mod fatfs2 {
     pub struct FatFsCursor<SDMMC> {
         sdmmc: SDMMC,
         pos: u64,
+        partition_index: u8,
         partition_info: Option<PartitionInfo>,
         block: DataBlock,
         current_block: Option<u32>,
@@ -1427,10 +1431,12 @@ mod fatfs2 {
     }
 
     impl<SDMMC> FatFsCursor<SDMMC> {
-        pub fn new(sdmmc: SDMMC) -> Self {
+        pub fn new(sdmmc: SDMMC, partition_index: u8) -> Self {
+            assert!(partition_index < 4);
             Self {
                 sdmmc,
                 pos: 0,
+                partition_index,
                 partition_info: None,
                 block: DataBlock([0; 512]),
                 current_block: None,
@@ -1484,20 +1490,20 @@ mod fatfs2 {
             let mut block = DataBlock([0; 512]);
             self.sdmmc.read_block(0, &mut block)?;
 
-            // TODO: Support other partitions.
-            let partition1_info = &block.0[446..][..16];
+            let start = self.partition_index as usize * 16;
+            let partition_info = &block.0[446..][start..(start + 16)];
             let lba_start = u32::from_le_bytes([
-                partition1_info[8],
-                partition1_info[9],
-                partition1_info[10],
-                partition1_info[11],
+                partition_info[8],
+                partition_info[9],
+                partition_info[10],
+                partition_info[11],
             ]);
 
             let num_blocks = u32::from_le_bytes([
-                partition1_info[12],
-                partition1_info[13],
-                partition1_info[14],
-                partition1_info[15],
+                partition_info[12],
+                partition_info[13],
+                partition_info[14],
+                partition_info[15],
             ]);
 
             Ok(*self
