@@ -1494,20 +1494,27 @@ mod fatfs2 {
         SDMMC: SdmmcIo,
     {
         fn seek(&mut self, pos: SeekFrom) -> Result<u64, Self::Error> {
-            // TODO: Use `checked_add_signed` when stable.
+            //implement checked_add_signed until u64::checked_add_signed(i64) becomes stable
+            let checked_add_signed =
+                |v: u64, o: i64| -> Result<u64, Self::Error> {
+                    if o.is_negative() {
+                        v.checked_sub(o.abs() as u64)
+                    } else {
+                        v.checked_add(o as u64)
+                    }
+                    .ok_or(Self::Error::InvalidInput)
+                };
             let new_pos = match pos {
-                SeekFrom::Start(offset) => offset as i128,
+                SeekFrom::Start(offset) => Ok(offset),
                 SeekFrom::End(offset) => {
                     let end = self.partition_info()?.1 * 512;
-                    end as i128 + offset as i128
+                    checked_add_signed(end as u64, offset)
                 }
-                SeekFrom::Current(offset) => self.pos as i128 + offset as i128,
-            };
+                SeekFrom::Current(offset) => {
+                    checked_add_signed(self.pos, offset)
+                }
+            }?;
 
-            if new_pos < 0 || new_pos > u64::MAX as i128 {
-                // Seek to negative or overflowing position.
-                return Err(Self::Error::InvalidInput);
-            }
             let new_pos = new_pos as u64;
 
             self.pos = new_pos;
